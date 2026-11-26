@@ -1,0 +1,6 @@
+{
+  "printWidth": 120,
+  "semi": false,
+  "singleQuote": true,
+  "overrides": [{ "files": ["*.ts", "*.json"], "options": { "tabWidth": 4 } }]
+}

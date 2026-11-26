@@ -1,0 +1,84 @@
+name: Review
+
+# The automated pull-request reviewer for AgentMail's repositories. A repository calls this workflow from its
+# own `pull_request_target` workflow (see the README for the caller). The engineer asks for a review by adding
+# the `ai-review` label, which is their statement that they have reviewed the change and accept responsibility
+# for merging it on automated approval alone. The review is posted by the agentmail-ai-reviewer GitHub App,
+# never the PR's author, so it counts toward the one required approval. A push dismisses that approval, and
+# `synchronize` reviews the new commit while the label stays on.
+#
+# The script and the prompt are read from this repository's `main`, so a PR cannot change its own reviewer.
+# The PR's code is never checked out or run: the diff is fetched as text and treated as data.
+#
+# Anything short of a clean verdict (a finding, an API error, output the script cannot read) leaves the PR
+# without an approval.
+#
+# The App needs contents: write (GitHub counts approvals only from reviewers with write access) and
+# pull-requests: write, and must not be a ruleset bypass actor.
+on:
+  workflow_call:
+    secrets:
+      OPENAI_API_KEY:
+        required: true
+      AI_REVIEWER_PRIVATE_KEY:
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+env:
+  AI_REVIEW_MODEL: gpt-6-luna
+  REPO: ${{ github.repository }}
+  PR: ${{ github.event.pull_request.number }}
+  HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+
+jobs:
+  review:
+    if: >-
+      contains(github.event.pull_request.labels.*.name, 'ai-review') &&
+      (github.event.action != 'labeled' || github.event.label.name == 'ai-review') &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: agentmail-to/ai-review
+          ref: main
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      # Only a person can take responsibility for the change, so a label added by automation fails here.
+      - name: Fetch the diff and who asked for the review
+        id: pr
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$REPO/pulls/$PR" -H 'Accept: application/vnd.github.diff' > "$RUNNER_TEMP/pr.diff"
+          requested_by=$(gh api "repos/$REPO/issues/$PR/timeline" --paginate \
+            --jq '.[] | select(.event == "labeled" and .label.name == "ai-review" and .actor.type == "User") | .actor.login' | tail -n 1)
+          test -n "$requested_by"
+          echo "requested-by=$requested_by" >> "$GITHUB_OUTPUT"
+          echo "reviewer-sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      # The model's step holds no token that can write to the PR.
+      - name: Review
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          REVIEWER_SHA: ${{ steps.pr.outputs.reviewer-sha }}
+          REQUESTED_BY: ${{ steps.pr.outputs.requested-by }}
+        run: node review.ts --diff "$RUNNER_TEMP/pr.diff" --out "$RUNNER_TEMP/review.json"
+      - uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
+        id: app-token
+        with:
+          client-id: Iv23liXXn6EUIl8uVGP3
+          private-key: ${{ secrets.AI_REVIEWER_PRIVATE_KEY }}
+          permission-pull-requests: write
+      # The review names the commit it read; a PR that has moved on gets no review from this run.
+      - name: Post the review
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          test "$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)" = "$HEAD_SHA"
+          gh api --method POST "repos/$REPO/pulls/$PR/reviews" --input "$RUNNER_TEMP/review.json"
