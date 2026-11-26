@@ -6,7 +6,8 @@ A pull request needs one approval to merge. When no reviewer is around, the engi
 
 ## How to use it
 
-1. Review your own change first, ideally with a strong model. The automated reviewer only catches obvious errors.
+1. Review your own change first, ideally with a strong model. The automated reviewer approves unless it is certain
+   something is seriously wrong, so your own review is the real one.
 2. Add the `ai-review` label to the pull request.
 3. The `agentmail-ai-reviewer` App posts a review: an approval when it finds nothing blocking, otherwise a comment
    listing what it found.
